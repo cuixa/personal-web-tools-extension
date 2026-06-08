@@ -1,0 +1,52 @@
+{
+  "manifest_version": 3,
+  "name": "Personal Web Tools",
+  "version": "0.1.0",
+  "description": "A personal browser toolkit for reading anchors, page notes, and future web utilities.",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "commands": {
+    "set-anchor": {
+      "suggested_key": {
+        "default": "Alt+Shift+A",
+        "mac": "Alt+Shift+A"
+      },
+      "description": "Set scroll anchor at the current position"
+    },
+    "go-anchor": {
+      "suggested_key": {
+        "default": "Alt+Shift+G",
+        "mac": "Alt+Shift+G"
+      },
+      "description": "Jump to the saved scroll anchor"
+    },
+    "return-before-anchor": {
+      "suggested_key": {
+        "default": "Alt+Shift+B",
+        "mac": "Alt+Shift+B"
+      },
+      "description": "Return to the position before jumping to the anchor"
+    },
+    "add-note": {
+      "suggested_key": {
+        "default": "Alt+Shift+N",
+        "mac": "Alt+Shift+N"
+      },
+      "description": "Add a note at a clicked page position"
+    }
+  },
+  "options_page": "options.html",
+  "action": {
+    "default_title": "Personal Web Tools",
+    "default_popup": "popup.html"
+  }
+}

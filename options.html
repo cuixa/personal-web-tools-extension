@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <title>Personal Web Tools 设置</title>
+    <link rel="stylesheet" href="options.css">
+  </head>
+  <body>
+    <main>
+      <h1>Personal Web Tools 设置</h1>
+      <section>
+        <h2>网页笔记保存位置</h2>
+        <p>选择一个本地文件夹后，扩展会把所有网页笔记保存为 <code>web-page-notes.json</code>。</p>
+        <div class="actions">
+          <button id="choose-directory">选择文件夹</button>
+          <button id="sync-now">立即写入文件</button>
+        </div>
+        <p id="status">尚未选择文件夹。笔记会先保存在 Chrome 扩展本地存储中。</p>
+      </section>
+    </main>
+    <script src="options.js"></script>
+  </body>
+</html>
