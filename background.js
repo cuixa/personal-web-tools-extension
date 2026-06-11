@@ -71,15 +71,19 @@ async function sendCommandToActiveTab(command) {
     return;
   }
 
+  await sendMessageToTab(tab.id, { type: command });
+}
+
+async function sendMessageToTab(tabId, message) {
   try {
-    await chrome.tabs.sendMessage(tab.id, { type: command });
+    await chrome.tabs.sendMessage(tabId, message);
   } catch {
     try {
       await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
+        target: { tabId },
         files: ["content.js"]
       });
-      await chrome.tabs.sendMessage(tab.id, { type: command });
+      await chrome.tabs.sendMessage(tabId, message);
     } catch {
       // Content scripts cannot run on Chrome internal pages, PDF viewer pages,
       // extension stores, or restricted pages.
@@ -99,7 +103,7 @@ async function mirrorNotesToDirectory(notes) {
     return { ok: false, error: "No notes folder selected" };
   }
 
-  const permission = await verifyPermission(directoryHandle, true);
+  const permission = await hasPermission(directoryHandle, true);
 
   if (!permission) {
     return { ok: false, error: "No write permission for selected folder" };
@@ -126,7 +130,7 @@ async function getDirectoryHandle() {
   });
 }
 
-async function verifyPermission(handle, write) {
+async function hasPermission(handle, write) {
   if (!handle.queryPermission || !handle.requestPermission) {
     return false;
   }
@@ -134,10 +138,6 @@ async function verifyPermission(handle, write) {
   const options = { mode: write ? "readwrite" : "read" };
 
   if ((await handle.queryPermission(options)) === "granted") {
-    return true;
-  }
-
-  if ((await handle.requestPermission(options)) === "granted") {
     return true;
   }
 

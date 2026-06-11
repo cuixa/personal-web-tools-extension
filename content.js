@@ -227,11 +227,33 @@
   }
 
   async function persistNotes() {
-    await chrome.runtime.sendMessage({
+    const response = await chrome.runtime.sendMessage({
       type: "save-notes",
       pageKey: getPageKey(),
       notes
     });
+
+    await notifyMirrorFailure(response?.mirror);
+  }
+
+  async function notifyMirrorFailure(mirror) {
+    if (!mirror || mirror.ok) {
+      return;
+    }
+
+    let message = "";
+
+    if (mirror.error === "No notes folder selected") {
+      message = "网页笔记已保存到扩展本地存储，但尚未选择文件保存文件夹。是否打开设置页选择文件夹？";
+    } else if (mirror.error === "No write permission for selected folder") {
+      message = "网页笔记已保存到扩展本地存储，但当前没有保存文件夹的写入权限，尚未同步到 web-page-notes.json。是否打开设置页重新授权？";
+    } else {
+      message = `网页笔记已保存到扩展本地存储，但写入 web-page-notes.json 失败：${mirror.error}。是否打开设置页检查？`;
+    }
+
+    if (window.confirm(message)) {
+      await chrome.runtime.sendMessage({ type: "open-options" });
+    }
   }
 
   function renderNotes() {
