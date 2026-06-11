@@ -37,7 +37,7 @@ async function syncNow() {
   const handle = await getDirectoryHandle();
 
   if (!handle) {
-    status.textContent = "尚未选择文件夹。笔记会先保存在 Chrome 扩展本地存储中。";
+    status.textContent = "尚未选择文件夹。未授权前无法保存网页笔记。";
     return;
   }
 
@@ -51,10 +51,10 @@ async function syncNow() {
   const response = await chrome.runtime.sendMessage({ type: "sync-notes-file" });
 
   if (response?.ok) {
-    status.textContent = `当前文件夹：${handle.name}。已写入 ${NOTES_FILE}`;
+    status.textContent = `当前文件夹：${handle.name}。${NOTES_FILE} 可读写`;
   } else {
     status.textContent = response?.error === "No notes folder selected"
-      ? "尚未选择文件夹。笔记会先保存在 Chrome 扩展本地存储中。"
+      ? "尚未选择文件夹。未授权前无法保存网页笔记。"
       : response?.error || "写入文件失败，请重新选择文件夹。";
   }
 }

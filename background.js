@@ -1,4 +1,3 @@
-const NOTES_KEY = "scrollAnchorNotesV1";
 const DIRECTORY_DB = "scroll-anchor-directory";
 const DIRECTORY_STORE = "handles";
 const DIRECTORY_HANDLE_KEY = "notes-directory";
@@ -27,24 +26,32 @@ async function handleMessage(message) {
   }
 
   if (message?.type === "get-notes") {
-    const notes = await getAllNotes();
-    return { ok: true, notes: notes[message.pageKey] || [] };
+    const result = await safeReadNotesFromDirectory();
+    if (!result.ok) {
+      return result;
+    }
+    return { ok: true, notes: result.notes[message.pageKey] || [] };
   }
 
   if (message?.type === "save-notes") {
-    const notes = await getAllNotes();
+    const result = await safeReadNotesFromDirectory();
+    if (!result.ok) {
+      return result;
+    }
+    const notes = result.notes;
     notes[message.pageKey] = message.notes;
-    await chrome.storage.local.set({ [NOTES_KEY]: notes });
-    const mirror = await safeMirrorNotesToDirectory(notes);
-    return { ok: true, mirror };
+    return await safeWriteNotesToDirectory(notes);
   }
 
   if (message?.type === "sync-notes-file") {
-    const notes = await getAllNotes();
-    const mirror = await safeMirrorNotesToDirectory(notes);
-    if (!mirror.ok) {
-      return mirror;
+    const result = await safeReadNotesFromDirectory();
+    if (!result.ok) {
+      return result;
     }
+    if (result.missing) {
+      return await safeWriteNotesToDirectory(result.notes);
+    }
+
     return { ok: true };
   }
 
@@ -56,9 +63,17 @@ async function handleMessage(message) {
   return { ok: false, error: "Unknown message" };
 }
 
-async function safeMirrorNotesToDirectory(notes) {
+async function safeReadNotesFromDirectory() {
   try {
-    return await mirrorNotesToDirectory(notes);
+    return await readNotesFromDirectory();
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+}
+
+async function safeWriteNotesToDirectory(notes) {
+  try {
+    return await writeNotesToDirectory(notes);
   } catch (error) {
     return { ok: false, error: error.message };
   }
@@ -91,12 +106,41 @@ async function sendMessageToTab(tabId, message) {
   }
 }
 
-async function getAllNotes() {
-  const result = await chrome.storage.local.get(NOTES_KEY);
-  return result[NOTES_KEY] || {};
+async function readNotesFromDirectory() {
+  const directoryHandle = await getDirectoryHandle();
+
+  if (!directoryHandle) {
+    return { ok: false, error: "No notes folder selected" };
+  }
+
+  const permission = await hasPermission(directoryHandle, true);
+
+  if (!permission) {
+    return { ok: false, error: "No write permission for selected folder" };
+  }
+
+  let fileHandle;
+  try {
+    fileHandle = await directoryHandle.getFileHandle(NOTES_FILE);
+  } catch (error) {
+    if (error.name === "NotFoundError") {
+      return { ok: true, notes: {}, missing: true };
+    }
+    throw error;
+  }
+
+  const file = await fileHandle.getFile();
+  const text = await file.text();
+
+  if (!text.trim()) {
+    return { ok: true, notes: {}, missing: false };
+  }
+
+  const data = JSON.parse(text);
+  return { ok: true, notes: data.notes || {}, missing: false };
 }
 
-async function mirrorNotesToDirectory(notes) {
+async function writeNotesToDirectory(notes) {
   const directoryHandle = await getDirectoryHandle();
 
   if (!directoryHandle) {

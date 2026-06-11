@@ -1,11 +1,17 @@
 (() => {
   const ANCHOR_PREFIX = "scroll-anchor:";
+  const NOTE_HOST_ID = "scroll-anchor-extension-host";
   const NOTE_LAYER_ID = "scroll-anchor-note-layer";
   const STYLE_ID = "scroll-anchor-style";
 
   let notes = [];
   let placementMode = false;
   let toastTimer;
+  let shadowRoot;
+  let notesLoaded = false;
+  let notesLoadStarted = false;
+  let notesLoadPromise = null;
+  let lastLoadError = null;
 
   function getPageKey() {
     return `${location.origin}${location.pathname}${location.search}`;
@@ -47,7 +53,8 @@
   }
 
   function showToast(message) {
-    let toast = document.getElementById("scroll-anchor-toast");
+    const root = ensureShadowRoot();
+    let toast = root.getElementById("scroll-anchor-toast");
 
     if (!toast) {
       toast = document.createElement("div");
@@ -70,7 +77,7 @@
         "transition:opacity .16s ease,transform .16s ease",
         "pointer-events:none"
       ].join(";");
-      document.documentElement.appendChild(toast);
+      root.appendChild(toast);
     }
 
     toast.textContent = message;
@@ -124,13 +131,22 @@
   }
 
   function ensureStyles() {
-    if (document.getElementById(STYLE_ID)) {
+    const root = ensureShadowRoot();
+
+    if (root.getElementById(STYLE_ID)) {
       return;
     }
 
     const style = document.createElement("style");
     style.id = STYLE_ID;
     style.textContent = `
+      :host {
+        position: absolute;
+        inset: 0 auto auto 0;
+        width: 0;
+        height: 0;
+        z-index: 2147483646;
+      }
       #${NOTE_LAYER_ID} {
         position: absolute;
         inset: 0 auto auto 0;
@@ -196,68 +212,131 @@
         gap: 8px;
         margin-top: 8px;
       }
-      html.scroll-anchor-placement-mode,
-      html.scroll-anchor-placement-mode * {
-        cursor: crosshair !important;
-      }
     `;
-    document.documentElement.appendChild(style);
+    root.appendChild(style);
   }
 
   function ensureLayer() {
     ensureStyles();
-    let layer = document.getElementById(NOTE_LAYER_ID);
+    let layer = shadowRoot.getElementById(NOTE_LAYER_ID);
 
     if (!layer) {
       layer = document.createElement("div");
       layer.id = NOTE_LAYER_ID;
-      document.documentElement.appendChild(layer);
+      shadowRoot.appendChild(layer);
     }
 
     return layer;
   }
 
-  async function loadNotes() {
-    const response = await chrome.runtime.sendMessage({
-      type: "get-notes",
-      pageKey: getPageKey()
-    });
-    notes = response?.notes || [];
-    renderNotes();
+  function ensureShadowRoot() {
+    if (shadowRoot) {
+      return shadowRoot;
+    }
+
+    let host = document.getElementById(NOTE_HOST_ID);
+
+    if (!host) {
+      host = document.createElement("div");
+      host.id = NOTE_HOST_ID;
+      host.style.cssText = [
+        "position:absolute",
+        "left:0",
+        "top:0",
+        "width:0",
+        "height:0",
+        "z-index:2147483646"
+      ].join(";");
+      if (!document.body) {
+        throw new Error("Document body is not ready");
+      }
+
+      document.body.appendChild(host);
+    }
+
+    shadowRoot = host.shadowRoot || host.attachShadow({ mode: "open" });
+    return shadowRoot;
   }
 
-  async function persistNotes() {
+  async function loadNotes() {
+    notesLoadStarted = true;
+    notesLoadPromise = chrome.runtime.sendMessage({
+      type: "get-notes",
+      pageKey: getPageKey()
+    }).then((response) => {
+      if (!response?.ok) {
+        notes = [];
+        notesLoaded = false;
+        lastLoadError = response || { error: "Could not load notes" };
+        return false;
+      }
+
+      notes = response?.notes || [];
+      notesLoaded = true;
+      lastLoadError = null;
+      renderNotes();
+      return true;
+    }).finally(() => {
+      notesLoadPromise = null;
+    });
+
+    return await notesLoadPromise;
+  }
+
+  async function ensureNotesLoaded() {
+    if (notesLoaded) {
+      return true;
+    }
+
+    if (notesLoadPromise) {
+      return await notesLoadPromise;
+    }
+
+    return await loadNotes();
+  }
+
+  async function persistNotes(nextNotes) {
     const response = await chrome.runtime.sendMessage({
       type: "save-notes",
       pageKey: getPageKey(),
-      notes
+      notes: nextNotes
     });
 
-    await notifyMirrorFailure(response?.mirror);
+    if (!response?.ok) {
+      await notifyStorageFailure(response);
+      return false;
+    }
+
+    notes = nextNotes;
+    return true;
   }
 
-  async function notifyMirrorFailure(mirror) {
-    if (!mirror || mirror.ok) {
+  async function notifyStorageFailure(response) {
+    if (!response || response.ok) {
       return;
     }
 
     let message = "";
 
-    if (mirror.error === "No notes folder selected") {
-      message = "网页笔记已保存到扩展本地存储，但尚未选择文件保存文件夹。是否打开设置页选择文件夹？";
-    } else if (mirror.error === "No write permission for selected folder") {
-      message = "网页笔记已保存到扩展本地存储，但当前没有保存文件夹的写入权限，尚未同步到 web-page-notes.json。是否打开设置页重新授权？";
+    if (response.error === "No notes folder selected") {
+      message = "网页笔记未保存：尚未选择本地笔记文件夹。请先授权保存文件夹。";
+    } else if (response.error === "No write permission for selected folder") {
+      message = "网页笔记未保存：当前没有本地笔记文件夹的读写权限。请先重新授权。";
     } else {
-      message = `网页笔记已保存到扩展本地存储，但写入 web-page-notes.json 失败：${mirror.error}。是否打开设置页检查？`;
+      message = `网页笔记未保存：${response.error || "无法读写 web-page-notes.json"}。请检查保存文件夹授权。`;
     }
 
-    if (window.confirm(message)) {
-      await chrome.runtime.sendMessage({ type: "open-options" });
-    }
+    window.alert(message);
+    await chrome.runtime.sendMessage({ type: "open-options" });
   }
 
   function renderNotes() {
-    const layer = ensureLayer();
+    const layer = notes.length > 0 ? ensureLayer() : getLayerIfExists();
+
+    if (!layer) {
+      return;
+    }
+
     layer.querySelectorAll(".scroll-anchor-note,.scroll-anchor-editor").forEach((node) => node.remove());
 
     for (const note of notes) {
@@ -282,9 +361,11 @@
       remove.type = "button";
       remove.textContent = "删除";
       remove.addEventListener("click", async () => {
-        notes = notes.filter((item) => item.id !== note.id);
-        await persistNotes();
-        renderNotes();
+        const nextNotes = notes.filter((item) => item.id !== note.id);
+
+        if (await persistNotes(nextNotes)) {
+          renderNotes();
+        }
       });
 
       actions.append(edit, remove);
@@ -293,15 +374,17 @@
     }
   }
 
+  function getLayerIfExists() {
+    return shadowRoot?.getElementById(NOTE_LAYER_ID) || null;
+  }
+
   function startNotePlacement() {
     placementMode = true;
-    document.documentElement.classList.add("scroll-anchor-placement-mode");
     showToast("Click anywhere on the page to place a note");
   }
 
   function stopNotePlacement() {
     placementMode = false;
-    document.documentElement.classList.remove("scroll-anchor-placement-mode");
   }
 
   function openEditor(x, y, existingNote) {
@@ -336,11 +419,22 @@
         return;
       }
 
-      if (existingNote) {
-        existingNote.text = text;
-        existingNote.updatedAt = new Date().toISOString();
-      } else {
-        notes.push({
+      if (!existingNote && !notesLoaded && !(await ensureNotesLoaded())) {
+        await notifyStorageFailure(lastLoadError || { error: "No notes folder selected" });
+        return;
+      }
+
+      const nextNotes = existingNote
+        ? notes.map((note) => note.id === existingNote.id
+          ? {
+            ...note,
+            text,
+            updatedAt: new Date().toISOString()
+          }
+          : note)
+        : [
+          ...notes,
+          {
           id: crypto.randomUUID(),
           text,
           x,
@@ -349,12 +443,13 @@
           title: document.title,
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
-        });
-      }
+          }
+        ];
 
-      await persistNotes();
-      renderNotes();
-      showToast("Note saved");
+      if (await persistNotes(nextNotes)) {
+        renderNotes();
+        showToast("Note saved");
+      }
     });
 
     actions.append(cancel, save);
@@ -397,8 +492,28 @@
       }
     });
 
-    loadNotes().catch(() => {
-      showToast("Could not load notes on this page");
-    });
+    scheduleInitialNotesLoad();
+  }
+
+  function scheduleInitialNotesLoad() {
+    const startAfterLoad = () => {
+      const load = () => {
+        loadNotes().catch(() => {
+          notes = [];
+        });
+      };
+
+      if ("requestIdleCallback" in window) {
+        window.requestIdleCallback(load, { timeout: 3000 });
+      } else {
+        window.setTimeout(load, 1200);
+      }
+    };
+
+    if (document.readyState === "complete") {
+      startAfterLoad();
+    } else {
+      window.addEventListener("load", startAfterLoad, { once: true });
+    }
   }
 })();

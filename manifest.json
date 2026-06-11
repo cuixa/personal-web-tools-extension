@@ -3,7 +3,7 @@
   "name": "Personal Web Tools",
   "version": "0.1.0",
   "description": "A personal browser toolkit for reading anchors, page notes, and future web utilities.",
-  "permissions": ["activeTab", "scripting", "storage"],
+  "permissions": ["activeTab", "scripting"],
   "background": {
     "service_worker": "background.js"
   },
