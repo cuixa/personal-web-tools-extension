@@ -3,6 +3,11 @@
   const NOTE_HOST_ID = "scroll-anchor-extension-host";
   const NOTE_LAYER_ID = "scroll-anchor-note-layer";
   const STYLE_ID = "scroll-anchor-style";
+  const GLOBAL_NOTE_KIND = "global-note";
+  const GLOBAL_NOTE_DEFAULT_WIDTH = 300;
+  const GLOBAL_NOTE_DEFAULT_HEIGHT = 180;
+  const GLOBAL_NOTE_MIN_WIDTH = 200;
+  const GLOBAL_NOTE_MIN_HEIGHT = 130;
 
   let notes = [];
   let placementMode = false;
@@ -12,6 +17,7 @@
   let notesLoadStarted = false;
   let notesLoadPromise = null;
   let lastLoadError = null;
+  let pendingGlobalNoteFocusId = null;
 
   function getPageKey() {
     return `${location.origin}${location.pathname}${location.search}`;
@@ -174,7 +180,8 @@
         margin-top: 8px;
       }
       .scroll-anchor-note button,
-      .scroll-anchor-editor button {
+      .scroll-anchor-editor button,
+      .scroll-anchor-global-note button {
         min-height: 26px;
         border: 1px solid #c8aa49;
         border-radius: 6px;
@@ -211,6 +218,76 @@
         justify-content: flex-end;
         gap: 8px;
         margin-top: 8px;
+      }
+      .scroll-anchor-global-note {
+        position: fixed;
+        display: flex;
+        flex-direction: column;
+        box-sizing: border-box;
+        min-width: ${GLOBAL_NOTE_MIN_WIDTH}px;
+        min-height: ${GLOBAL_NOTE_MIN_HEIGHT}px;
+        border: 1px solid #9aa4b2;
+        border-radius: 8px;
+        color: #172033;
+        background: #f8fbff;
+        box-shadow: 0 14px 32px rgba(15, 23, 42, .18);
+        font: 13px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        pointer-events: auto;
+        overflow: hidden;
+      }
+      .scroll-anchor-global-note-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 32px;
+        padding: 6px 8px;
+        border-bottom: 1px solid #d8dee8;
+        background: #edf4ff;
+        cursor: move;
+        user-select: none;
+      }
+      .scroll-anchor-global-note-title {
+        flex: 1;
+        overflow: hidden;
+        color: #172033;
+        font-weight: 600;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+      }
+      .scroll-anchor-global-note-actions {
+        display: flex;
+        gap: 6px;
+      }
+      .scroll-anchor-global-note textarea {
+        flex: 1;
+        box-sizing: border-box;
+        width: 100%;
+        min-height: 0;
+        padding: 10px;
+        border: 0;
+        outline: 0;
+        color: #172033;
+        background: #f8fbff;
+        font: 13px/1.5 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        resize: none;
+      }
+      .scroll-anchor-global-note-resize {
+        position: absolute;
+        right: 0;
+        bottom: 0;
+        width: 16px;
+        height: 16px;
+        cursor: nwse-resize;
+      }
+      .scroll-anchor-global-note-resize::after {
+        content: "";
+        position: absolute;
+        right: 4px;
+        bottom: 4px;
+        width: 7px;
+        height: 7px;
+        border-right: 2px solid #6b7280;
+        border-bottom: 2px solid #6b7280;
       }
     `;
     root.appendChild(style);
@@ -311,6 +388,38 @@
     return true;
   }
 
+  async function updateNote(noteId, getPatch, options = {}) {
+    const shouldRender = options.render !== false;
+    const now = new Date().toISOString();
+    let found = false;
+    const nextNotes = notes.map((note) => {
+      if (note.id !== noteId) {
+        return note;
+      }
+
+      found = true;
+      return {
+        ...note,
+        ...getPatch(note),
+        updatedAt: now
+      };
+    });
+
+    if (!found) {
+      return false;
+    }
+
+    if (await persistNotes(nextNotes)) {
+      if (shouldRender) {
+        renderNotes();
+      }
+
+      return true;
+    }
+
+    return false;
+  }
+
   async function notifyStorageFailure(response) {
     if (!response || response.ok) {
       return;
@@ -337,9 +446,19 @@
       return;
     }
 
-    layer.querySelectorAll(".scroll-anchor-note,.scroll-anchor-editor").forEach((node) => node.remove());
+    layer
+      .querySelectorAll(".scroll-anchor-note,.scroll-anchor-editor,.scroll-anchor-global-note")
+      .forEach((node) => node.remove());
 
     for (const note of notes) {
+      if (isGlobalNote(note)) {
+        if (!note.hidden) {
+          renderGlobalNote(layer, note);
+        }
+
+        continue;
+      }
+
       const card = document.createElement("article");
       card.className = "scroll-anchor-note";
       card.style.left = `${Math.max(8, note.x)}px`;
@@ -372,10 +491,268 @@
       card.append(text, actions);
       layer.appendChild(card);
     }
+
+    if (pendingGlobalNoteFocusId) {
+      const card = Array.from(layer.querySelectorAll("[data-global-note-id]"))
+        .find((node) => node.dataset.globalNoteId === pendingGlobalNoteFocusId);
+      const textarea = card?.querySelector("textarea");
+      pendingGlobalNoteFocusId = null;
+
+      if (textarea) {
+        requestAnimationFrame(() => textarea.focus());
+      }
+    }
   }
 
   function getLayerIfExists() {
     return shadowRoot?.getElementById(NOTE_LAYER_ID) || null;
+  }
+
+  function isGlobalNote(note) {
+    return note?.kind === GLOBAL_NOTE_KIND;
+  }
+
+  function clampValue(value, min, max) {
+    return Math.min(Math.max(value, min), Math.max(min, max));
+  }
+
+  function getGlobalNoteRect(note) {
+    const width = clampValue(
+      Number(note.width) || GLOBAL_NOTE_DEFAULT_WIDTH,
+      GLOBAL_NOTE_MIN_WIDTH,
+      Math.max(GLOBAL_NOTE_MIN_WIDTH, window.innerWidth - 16)
+    );
+    const height = clampValue(
+      Number(note.height) || GLOBAL_NOTE_DEFAULT_HEIGHT,
+      GLOBAL_NOTE_MIN_HEIGHT,
+      Math.max(GLOBAL_NOTE_MIN_HEIGHT, window.innerHeight - 16)
+    );
+
+    return {
+      width,
+      height,
+      x: clampValue(Number(note.x) || window.innerWidth - width - 16, 8, window.innerWidth - width - 8),
+      y: clampValue(Number(note.y) || 16, 8, window.innerHeight - height - 8)
+    };
+  }
+
+  function renderGlobalNote(layer, note) {
+    const rect = getGlobalNoteRect(note);
+    const card = document.createElement("section");
+    card.className = "scroll-anchor-global-note";
+    card.dataset.globalNoteId = note.id;
+    card.style.left = `${rect.x}px`;
+    card.style.top = `${rect.y}px`;
+    card.style.width = `${rect.width}px`;
+    card.style.height = `${rect.height}px`;
+
+    const header = document.createElement("div");
+    header.className = "scroll-anchor-global-note-header";
+
+    const title = document.createElement("div");
+    title.className = "scroll-anchor-global-note-title";
+    title.textContent = "全局笔记";
+
+    const actions = document.createElement("div");
+    actions.className = "scroll-anchor-global-note-actions";
+
+    const save = document.createElement("button");
+    save.type = "button";
+    save.textContent = "保存";
+
+    const hide = document.createElement("button");
+    hide.type = "button";
+    hide.textContent = "隐藏";
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "删除";
+
+    const textarea = document.createElement("textarea");
+    textarea.placeholder = "写下全局笔记...";
+    textarea.value = note.text || "";
+
+    save.addEventListener("click", async () => {
+      if (await updateNote(note.id, () => ({ text: textarea.value }))) {
+        showToast("全局笔记已保存");
+      }
+    });
+
+    hide.addEventListener("click", async () => {
+      await updateNote(note.id, () => ({
+        text: textarea.value,
+        hidden: true
+      }));
+    });
+
+    remove.addEventListener("click", async () => {
+      const nextNotes = notes.filter((item) => item.id !== note.id);
+
+      if (await persistNotes(nextNotes)) {
+        renderNotes();
+      }
+    });
+
+    for (const button of [save, hide, remove]) {
+      button.addEventListener("pointerdown", (event) => event.stopPropagation());
+    }
+
+    header.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0 || event.target.closest("button")) {
+        return;
+      }
+
+      beginGlobalNoteDrag(event, note, card);
+    });
+
+    const resize = document.createElement("div");
+    resize.className = "scroll-anchor-global-note-resize";
+    resize.addEventListener("pointerdown", (event) => beginGlobalNoteResize(event, note, card));
+
+    actions.append(save, hide, remove);
+    header.append(title, actions);
+    card.append(header, textarea, resize);
+    layer.appendChild(card);
+  }
+
+  function beginGlobalNoteDrag(event, note, card) {
+    event.preventDefault();
+    const startRect = card.getBoundingClientRect();
+    const startClientX = event.clientX;
+    const startClientY = event.clientY;
+    let nextX = startRect.left;
+    let nextY = startRect.top;
+
+    const move = (moveEvent) => {
+      nextX = clampValue(
+        startRect.left + moveEvent.clientX - startClientX,
+        8,
+        window.innerWidth - startRect.width - 8
+      );
+      nextY = clampValue(
+        startRect.top + moveEvent.clientY - startClientY,
+        8,
+        window.innerHeight - startRect.height - 8
+      );
+      card.style.left = `${nextX}px`;
+      card.style.top = `${nextY}px`;
+    };
+
+    const stop = async () => {
+      window.removeEventListener("pointermove", move, true);
+      window.removeEventListener("pointerup", stop, true);
+
+      const saved = await updateNote(note.id, () => ({ x: nextX, y: nextY }), { render: false });
+
+      if (!saved) {
+        renderNotes();
+      }
+    };
+
+    window.addEventListener("pointermove", move, true);
+    window.addEventListener("pointerup", stop, true);
+  }
+
+  function beginGlobalNoteResize(event, note, card) {
+    event.preventDefault();
+    event.stopPropagation();
+    const startRect = card.getBoundingClientRect();
+    const startClientX = event.clientX;
+    const startClientY = event.clientY;
+    let nextWidth = startRect.width;
+    let nextHeight = startRect.height;
+
+    const move = (moveEvent) => {
+      nextWidth = clampValue(
+        startRect.width + moveEvent.clientX - startClientX,
+        GLOBAL_NOTE_MIN_WIDTH,
+        window.innerWidth - startRect.left - 8
+      );
+      nextHeight = clampValue(
+        startRect.height + moveEvent.clientY - startClientY,
+        GLOBAL_NOTE_MIN_HEIGHT,
+        window.innerHeight - startRect.top - 8
+      );
+      card.style.width = `${nextWidth}px`;
+      card.style.height = `${nextHeight}px`;
+    };
+
+    const stop = async () => {
+      window.removeEventListener("pointermove", move, true);
+      window.removeEventListener("pointerup", stop, true);
+
+      const saved = await updateNote(note.id, () => ({ width: nextWidth, height: nextHeight }), { render: false });
+
+      if (!saved) {
+        renderNotes();
+      }
+    };
+
+    window.addEventListener("pointermove", move, true);
+    window.addEventListener("pointerup", stop, true);
+  }
+
+  async function createGlobalNote() {
+    if (!(await ensureNotesLoaded())) {
+      await notifyStorageFailure(lastLoadError || { error: "No notes folder selected" });
+      return;
+    }
+
+    const width = GLOBAL_NOTE_DEFAULT_WIDTH;
+    const height = GLOBAL_NOTE_DEFAULT_HEIGHT;
+    const createdAt = new Date().toISOString();
+    const note = {
+      id: crypto.randomUUID(),
+      kind: GLOBAL_NOTE_KIND,
+      text: "",
+      x: Math.max(8, window.innerWidth - width - 16),
+      y: 16,
+      width,
+      height,
+      hidden: false,
+      href: location.href,
+      title: document.title,
+      createdAt,
+      updatedAt: createdAt
+    };
+
+    pendingGlobalNoteFocusId = note.id;
+
+    if (await persistNotes([...notes, note])) {
+      renderNotes();
+      showToast("全局笔记已创建");
+    } else {
+      pendingGlobalNoteFocusId = null;
+    }
+  }
+
+  async function toggleGlobalNotes() {
+    if (!(await ensureNotesLoaded())) {
+      await notifyStorageFailure(lastLoadError || { error: "No notes folder selected" });
+      return;
+    }
+
+    const globalNotes = notes.filter(isGlobalNote);
+
+    if (globalNotes.length === 0) {
+      showToast("当前页面还没有全局笔记");
+      return;
+    }
+
+    const shouldHide = globalNotes.some((note) => !note.hidden);
+    const now = new Date().toISOString();
+    const nextNotes = notes.map((note) => isGlobalNote(note)
+      ? {
+        ...note,
+        hidden: shouldHide,
+        updatedAt: now
+      }
+      : note);
+
+    if (await persistNotes(nextNotes)) {
+      renderNotes();
+      showToast(shouldHide ? "全局笔记已隐藏" : "全局笔记已显示");
+    }
   }
 
   function startNotePlacement() {
@@ -489,6 +866,14 @@
 
       if (message?.type === "add-note") {
         startNotePlacement();
+      }
+
+      if (message?.type === "add-global-note") {
+        createGlobalNote();
+      }
+
+      if (message?.type === "toggle-global-notes") {
+        toggleGlobalNotes();
       }
     });
 
